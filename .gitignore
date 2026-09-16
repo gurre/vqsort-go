@@ -30,3 +30,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Reference papers kept locally, not redistributed
+docs/*.pdf

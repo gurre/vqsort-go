@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # The exhaustive suite is too slow for every push; run it nightly.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+env:
+  # The kernels only compile with the simd experiment. Set at job level so
+  # build, vet, test and bench all see the same configuration.
+  GOEXPERIMENT: simd
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # arm64 is where the kernels are; amd64 has none yet, and runs to prove
+        # the package still builds and produces identical results without them.
+        runner: [ubuntu-24.04-arm, ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Respect the toolchain line in go.mod rather than pinning a version
+          # here that can drift away from it.
+          go-version-file: go.mod
+
+      - name: Report the kernel this runner will exercise
+        run: go version && uname -m
+
+      - name: Build without the experiment
+        # Every build must work with the experiment off, falling back to
+        # slices.Sort. This is what most consumers will actually compile.
+        run: GOEXPERIMENT= go build ./... && GOEXPERIMENT= go vet ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+      - name: Test
+        # The exhaustive sweep runs on the nightly schedule and on demand; a
+        # push gets the boundary cases, which is where the bugs are.
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            go test -count=1 -timeout 60m ./...
+          else
+            go test -short -count=1 ./...
+          fi
+
+      - name: Test without the experiment
+        run: GOEXPERIMENT= go test -short -count=1 ./...
+
+      - name: Test with bounds checks restored
+        # The kernels index through unchecked pointer arithmetic; this build
+        # puts the checks back, so a violated partition invariant panics here
+        # rather than corrupting memory in the fast build.
+        run: go test -short -count=1 -tags vqsortchecked ./...
+
+      - name: Generated files are up to date
+        run: |
+          go generate ./...
+          git diff --exit-code || (echo "go generate produced a diff; commit the regenerated files" && exit 1)
+
+      - name: Mutation check
+        run: ./mutate.sh
+
+      - name: Fuzz
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          go test -run '^$' -fuzz FuzzSortInt32 -fuzztime 5m .
+          go test -run '^$' -fuzz FuzzSortFloat32 -fuzztime 5m .
+
+      - name: Benchmark smoke test
+        # Not a performance gate - hosted runners are too noisy for that. This
+        # only proves the benchmarks still build and produce sorted output.
+        run: go test -run '^$' -bench BenchmarkSortInt32 -benchtime 10x ./...
