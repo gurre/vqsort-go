@@ -71,6 +71,11 @@ jobs:
           git diff --exit-code || (echo "go generate produced a diff; commit the regenerated files" && exit 1)
 
       - name: Mutation check
+        # Eleven of the thirteen mutations land in files behind
+        # `goexperiment.simd && arm64`. On amd64 the script edits source the
+        # compiler never sees, the suite passes, and every one of them reads as
+        # a survivor. Only arm64 can answer the question the script asks.
+        if: runner.arch == 'ARM64'
         run: ./mutate.sh
 
       - name: Fuzz

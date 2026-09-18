@@ -89,6 +89,7 @@ go test ./...                     # exhaustive: every length to 2048, three seed
 go test -short ./...              # the boundaries that break things, seconds
 go test -tags vqsortchecked ./... # same, with bounds checks back on
 ./mutate.sh                       # check the suite catches the bugs it should
+mutest -packages .                # the same question asked of every defect site
 ```
 
 The kernels index through unchecked pointer arithmetic, because the bounds check
@@ -109,6 +110,17 @@ spill, the overlapping-store bug in the partition drain, an inverted network
 comparator, a disabled depth guard — and fails if any of them survives the suite.
 It has already paid for itself once, by showing that removing the depth guard
 entirely left every test passing.
+
+Eleven of those thirteen mutations live in files behind `goexperiment.simd &&
+arm64`, so the script only means anything on arm64 — on amd64 it edits source the
+compiler discards and reports the lot as survivors. CI runs it on the arm64 leg of
+the matrix only.
+
+[mutest](https://github.com/gurre/mutest) asks the same question of every defect
+site rather than thirteen chosen ones, and tells an unreached site apart from a
+survivor, which is the distinction `mutate.sh` cannot draw. A full sweep is a few
+thousand defects and runs for hours against this suite, so it is a deliberate pass
+rather than a CI step: `mutest -packages . -jobs 4`.
 
 The sorting networks get their own tests: they are branch-free generated code, so
 a miswired comparator sorts most inputs correctly. Those tests lean on the 0-1

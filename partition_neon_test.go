@@ -10,26 +10,57 @@ import (
 	"simd/archsimd"
 )
 
-// TestPermTable32x4 checks the table drives a permutation, not just a plausible
-// set of bytes. An out-of-range index is silently turned into a zero byte by
-// LookupOrZero, so a malformed row corrupts data without faulting.
+// TestPermTable32x4 checks the table drives the one permutation the partition
+// depends on, not just a plausible set of bytes. An out-of-range index is
+// silently turned into a zero byte by LookupOrZero, so a malformed row corrupts
+// data without faulting; and a row that permutes the right lanes in the wrong
+// order still reads as a permutation while losing the stability the partition
+// loop assumes.
 func TestPermTable32x4(t *testing.T) {
 	for m, row := range permTable32x4 {
-		var seen [lanes32]bool
-		for j := 0; j < lanes32; j++ {
-			lane := row[4*j] / 4
-			if row[4*j]%4 != 0 || lane >= lanes32 {
-				t.Fatalf("mask %d lane %d: byte index %d is not a lane start", m, j, row[4*j])
+		checkPermRow(t, m, row[:], lanes32, 4)
+	}
+}
+
+// TestPermTable64x2 is the same check for the 2-lane table. It is worth stating
+// separately because the 64-bit partition has no exhaustive per-mask test of its
+// own: until this existed, a corrupted row was visible only as a whole sort
+// coming out wrong.
+func TestPermTable64x2(t *testing.T) {
+	for m, row := range permTable64x2 {
+		checkPermRow(t, m, row[:], lanes64, 8)
+	}
+}
+
+// checkPermRow asserts row gathers the lanes of mask m into the order the
+// compress needs: the lanes that belong on the left of the pivot first, then
+// those that belong on the right, each group in ascending lane order. width is
+// how many bytes one lane spans.
+//
+// The expected order is spelled out here rather than recomputed the way the
+// table is built, so that the check states the contract instead of restating
+// the loop that produced it.
+func checkPermRow(t *testing.T, m int, row []uint8, lanes, width int) {
+	t.Helper()
+
+	var want []uint8
+	for _, side := range []int{0, 1} {
+		for lane := 0; lane < lanes; lane++ {
+			if m>>lane&1 == side {
+				want = append(want, uint8(lane))
 			}
-			for b := 0; b < 4; b++ {
-				if got, want := row[4*j+b], lane*4+uint8(b); got != want {
-					t.Fatalf("mask %d lane %d byte %d: got %d, want %d", m, j, b, got, want)
-				}
+		}
+	}
+
+	for j := 0; j < lanes; j++ {
+		for b := 0; b < width; b++ {
+			index := row[width*j+b]
+			if int(index) >= len(row) {
+				t.Fatalf("mask %d lane %d byte %d: index %d is out of range, which LookupOrZero turns into a zero byte", m, j, b, index)
 			}
-			if seen[lane] {
-				t.Fatalf("mask %d: lane %d appears twice", m, lane)
+			if got, expected := index, want[j]*uint8(width)+uint8(b); got != expected {
+				t.Fatalf("mask %d position %d byte %d: got index %d, want %d (lane %d)", m, j, b, got, expected, want[j])
 			}
-			seen[lane] = true
 		}
 	}
 }
